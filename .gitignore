@@ -1,0 +1,4 @@
+netbot
+*.cfg
+configs/
+test/

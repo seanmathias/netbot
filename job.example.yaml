@@ -1,0 +1,38 @@
+# netbot backup job file
+
+credentials:
+  username: admin
+  password: secret
+  enable_password: en_secret   # omit if not needed
+
+devices:
+  # Cisco IOS-XE — already lands in privileged mode
+  - host: 192.168.1.1
+    name: core-router
+
+  # Cisco IOS-XE — drops into user exec (>), scrapligo escalates automatically
+  - host: 192.168.1.2
+    name: dist-switch-1
+
+  # NX-OS
+  - host: 192.168.1.10
+    name: nexus-1
+    platform: cisco_nxos
+
+  # Arista EOS
+  - host: 192.168.1.20
+    name: arista-spine-1
+    platform: arista_eos
+
+  # Juniper — uses a different command automatically
+  - host: 192.168.1.30
+    name: juniper-edge
+    platform: juniper_junos
+
+  # Per-device credential override and custom command
+  - host: 10.0.0.50
+    name: legacy-router
+    username: netops
+    password: different
+    enable_password: different_en
+    command: show running-config full
