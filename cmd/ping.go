@@ -3,6 +3,8 @@ package cmd
 import (
 	"fmt"
 	"math"
+	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -84,7 +86,20 @@ func runPing(cmd *cobra.Command, args []string) error {
 		targets[i] = &pingTarget{host: host, numSlots: numSlots}
 	}
 
-	m := newPingModel(targets, pingFlags.interval, numSlots)
+	// Probe for raw ICMP socket access before launching the TUI. The alt
+	// screen (tea.WithAltScreen) clears the terminal entirely, so a warning
+	// printed before that point disappears from view the moment the program
+	// starts — the person watching the live table would otherwise have no
+	// way to tell *why* every ping is failing. The warning is therefore also
+	// carried into the model so it renders as a persistent banner in the
+	// running view itself, not just before it.
+	privilegeWarning := ""
+	if pingFlags.privileged && !canUseRawICMP() {
+		privilegeWarning = privilegeWarningMessage()
+		fmt.Fprintln(os.Stderr, "warning: "+privilegeWarning)
+	}
+
+	m := newPingModel(targets, pingFlags.interval, numSlots, privilegeWarning)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	for _, t := range targets {
@@ -93,6 +108,29 @@ func runPing(cmd *cobra.Command, args []string) error {
 
 	_, err := p.Run()
 	return err
+}
+
+// canUseRawICMP reports whether the process can actually open a raw ICMP
+// socket right now. This is a real permission probe — not just an euid==0
+// check — so it correctly reflects root, a setcap-granted capability, or
+// neither, on any platform Go's net package supports raw ICMP on.
+func canUseRawICMP() bool {
+	conn, err := net.ListenPacket("ip4:icmp", "0.0.0.0")
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// privilegeWarningMessage is the user-facing text shown both on stderr
+// before the TUI starts and as a persistent banner inside the running view,
+// so the warning stays visible even though the alt screen clears anything
+// printed beforehand.
+func privilegeWarningMessage() string {
+	return "Running without raw ICMP socket privileges — every ping below will report as lost. " +
+		"Run as root, grant the capability once with 'sudo setcap cap_net_raw+ep ./netbot', " +
+		"or restart with --privileged=false to use unprivileged UDP-based ICMP."
 }
 
 // ── Ping goroutine ────────────────────────────────────────────────────────────
@@ -451,20 +489,22 @@ func (t *pingTarget) timeline(displayWidth int) string {
 // ── Bubbletea model ───────────────────────────────────────────────────────────
 
 type pingModel struct {
-	targets  []*pingTarget
-	interval time.Duration
-	numSlots int
-	width    int
-	height   int
+	targets          []*pingTarget
+	interval         time.Duration
+	numSlots         int
+	width            int
+	height           int
+	privilegeWarning string
 }
 
-func newPingModel(targets []*pingTarget, interval time.Duration, numSlots int) pingModel {
+func newPingModel(targets []*pingTarget, interval time.Duration, numSlots int, privilegeWarning string) pingModel {
 	return pingModel{
-		targets:  targets,
-		interval: interval,
-		numSlots: numSlots,
-		width:    120,
-		height:   24,
+		targets:          targets,
+		interval:         interval,
+		numSlots:         numSlots,
+		width:            120,
+		height:           24,
+		privilegeWarning: privilegeWarning,
 	}
 }
 
@@ -492,7 +532,13 @@ func (m pingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m pingModel) View() string {
 	legend := pingHintStyle.Render("  Height = latency   Color = severity   Fade = loss density   Press q to quit")
-	return renderPingTable(m) + "\n" + legend
+
+	if m.privilegeWarning == "" {
+		return renderPingTable(m) + "\n" + legend
+	}
+
+	banner := pingWarnStyle.Render("  ⚠ " + m.privilegeWarning)
+	return banner + "\n\n" + renderPingTable(m) + "\n" + legend
 }
 
 // ── Table rendering ───────────────────────────────────────────────────────────
@@ -627,6 +673,7 @@ var (
 	pingCellStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	pingLossStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	pingHintStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Italic(true)
+	pingWarnStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
 )
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

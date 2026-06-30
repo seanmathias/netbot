@@ -563,6 +563,36 @@ func TestPingRequiresAtLeastOneTarget(t *testing.T) {
 	}
 }
 
+// ── privilege warning ────────────────────────────────────────────────────────
+
+func TestPrivilegeWarningMessageContent(t *testing.T) {
+	msg := privilegeWarningMessage()
+	for _, want := range []string{"root", "setcap", "cap_net_raw", "--privileged=false"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("privilegeWarningMessage() = %q, want it to mention %q", msg, want)
+		}
+	}
+}
+
+func TestPingModelViewShowsWarningBannerWhenSet(t *testing.T) {
+	m := newPingModel(nil, time.Second, 10, "test warning text")
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "test warning text") {
+		t.Errorf("View() did not contain the privilege warning banner: %q", view)
+	}
+	if !strings.Contains(view, "⚠") {
+		t.Error("View() warning banner missing the warning indicator")
+	}
+}
+
+func TestPingModelViewOmitsWarningBannerWhenEmpty(t *testing.T) {
+	m := newPingModel(nil, time.Second, 10, "")
+	view := stripANSI(m.View())
+	if strings.Contains(view, "⚠") {
+		t.Error("View() rendered a warning banner when no privilege warning was set")
+	}
+}
+
 // ── ANSI helper ──────────────────────────────────────────────────────────────
 
 // stripANSI removes ANSI escape sequences so tests can check raw text content.
