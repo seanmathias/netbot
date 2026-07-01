@@ -1,0 +1,17 @@
+# netbot ping session file
+#
+# Specifies targets and optional session settings for `netbot ping --file`.
+# All option fields are optional — any CLI flag explicitly provided at
+# runtime overrides the corresponding setting here.
+
+# Session settings
+interval: 1s      # ping interval per target — minimum 250ms (e.g. 500ms, 1s, 2s)
+range: 90s        # duration of timeline history shown (e.g. 60s, 5m, 300s)
+privileged: true  # use raw ICMP sockets; set false for unprivileged UDP mode
+
+# Target hosts — IP addresses or DNS hostnames, one per line
+targets:
+  - 8.8.8.8
+  - 8.8.4.4
+  - 1.1.1.1
+  - 192.168.1.1

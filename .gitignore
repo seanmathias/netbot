@@ -2,3 +2,4 @@ netbot
 *.cfg
 configs/
 test/
+ping.endpoints.yaml

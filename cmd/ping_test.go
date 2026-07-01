@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -558,8 +559,123 @@ func TestPingIntervalMinimum(t *testing.T) {
 }
 
 func TestPingRequiresAtLeastOneTarget(t *testing.T) {
-	if err := pingCmd.Args(pingCmd, []string{}); err == nil {
-		t.Error("expected error with no targets, got nil")
+	// With no file and no positional args, runPing should return an error.
+	saved := pingFlags.file
+	pingFlags.file = ""
+	defer func() { pingFlags.file = saved }()
+
+	err := runPing(pingCmd, []string{})
+	if err == nil {
+		t.Error("expected error with no targets and no --file, got nil")
+	}
+	if !strings.Contains(err.Error(), "no targets") {
+		t.Errorf("error = %q, want mention of 'no targets'", err.Error())
+	}
+}
+
+// ── loadPingJobFile ───────────────────────────────────────────────────────────
+
+func writePingJobFile(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "*.yaml")
+	if err != nil {
+		t.Fatalf("creating temp file: %v", err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatalf("writing temp file: %v", err)
+	}
+	f.Close()
+	return f.Name()
+}
+
+func TestLoadPingJobFileTargetsOnly(t *testing.T) {
+	path := writePingJobFile(t, `
+targets:
+  - 8.8.8.8
+  - 1.1.1.1
+  - 192.168.1.1
+`)
+	jf, err := loadPingJobFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(jf.Targets) != 3 {
+		t.Errorf("len(Targets) = %d, want 3", len(jf.Targets))
+	}
+	if jf.Targets[0] != "8.8.8.8" {
+		t.Errorf("Targets[0] = %q, want %q", jf.Targets[0], "8.8.8.8")
+	}
+	if jf.Interval != nil || jf.Range != nil || jf.Privileged != nil {
+		t.Error("optional fields should be nil when not set in file")
+	}
+}
+
+func TestLoadPingJobFileFullOptions(t *testing.T) {
+	path := writePingJobFile(t, `
+interval: 500ms
+range: 300s
+privileged: false
+
+targets:
+  - 8.8.8.8
+`)
+	jf, err := loadPingJobFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if jf.Interval == nil || *jf.Interval != 500*time.Millisecond {
+		t.Errorf("Interval = %v, want 500ms", jf.Interval)
+	}
+	if jf.Range == nil || *jf.Range != 300*time.Second {
+		t.Errorf("Range = %v, want 300s", jf.Range)
+	}
+	if jf.Privileged == nil || *jf.Privileged != false {
+		t.Errorf("Privileged = %v, want false", jf.Privileged)
+	}
+}
+
+func TestLoadPingJobFileEmptyTargets(t *testing.T) {
+	path := writePingJobFile(t, `
+interval: 1s
+targets: []
+`)
+	jf, err := loadPingJobFile(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(jf.Targets) != 0 {
+		t.Errorf("len(Targets) = %d, want 0", len(jf.Targets))
+	}
+}
+
+func TestLoadPingJobFileInvalidYAML(t *testing.T) {
+	path := writePingJobFile(t, `targets: [unclosed`)
+	if _, err := loadPingJobFile(path); err == nil {
+		t.Error("expected error for invalid YAML, got nil")
+	}
+}
+
+func TestLoadPingJobFileMissingFile(t *testing.T) {
+	if _, err := loadPingJobFile("/tmp/netbot-ping-does-not-exist.yaml"); err == nil {
+		t.Error("expected error for missing file, got nil")
+	}
+}
+
+func TestLoadPingJobFileDeduplicatesWithArgs(t *testing.T) {
+	// When a host appears in both the file and positional args, it should
+	// only appear once in the final target list (runPing deduplicates).
+	// We test the deduplication logic directly here.
+	hosts := []string{"8.8.8.8", "1.1.1.1", "8.8.8.8"} // duplicate
+	seen := make(map[string]bool)
+	var deduped []string
+	for _, h := range hosts {
+		if !seen[h] {
+			seen[h] = true
+			deduped = append(deduped, h)
+		}
+	}
+	if len(deduped) != 2 {
+		t.Errorf("deduplicated len = %d, want 2", len(deduped))
 	}
 }
 

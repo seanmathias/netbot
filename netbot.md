@@ -124,6 +124,7 @@ Press `q` or `Ctrl+C` to exit.
 
 | Flag | Short | Default | Description |
 |---|---|---|---|
+| `--file` | `-f` | — | YAML file specifying targets and session settings. See [ping-file.md](ping-file.md). |
 | `--interval` | `-i` | `1s` | Time between pings per target. Minimum `250ms`. |
 | `--range` | `-r` | `90s` | Duration of history shown in the timeline column. |
 | `--privileged` | — | `true` | Use raw ICMP sockets. Set `false` to fall back to unprivileged UDP-based ICMP. |
@@ -172,21 +173,21 @@ When a cell represents multiple binned pings, its appearance is anchored to thos
 #### Examples
 
 ```bash
-# Single target, default 90s window
+# Positional arguments
 netbot ping 192.168.1.1
-
-# Multiple targets at once
 netbot ping 8.8.8.8 1.1.1.1 192.168.1.1
-
-# Faster polling, shorter window
 netbot ping 8.8.8.8 --interval 500ms --range 60s
 
-# Five-minute compressed view
-netbot ping 8.8.8.8 --range 300s
+# Session file
+netbot ping --file targets.yaml
+netbot ping --file targets.yaml --range 300s    # CLI flag overrides file setting
+netbot ping --file targets.yaml 10.99.0.1       # extra ad-hoc target alongside file
 
 # No root / no setcap — unprivileged UDP mode
 netbot ping 8.8.8.8 --privileged=false
 ```
+
+See [ping-file.md](ping-file.md) for the full session file format reference.
 
 ---
 

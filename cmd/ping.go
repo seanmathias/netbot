@@ -14,18 +14,42 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	probing "github.com/prometheus-community/pro-bing"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 // ── Flags ─────────────────────────────────────────────────────────────────────
 
 var pingFlags struct {
+	file       string
 	interval   time.Duration
 	timeRange  time.Duration
 	privileged bool
 }
 
+// pingJobFile is the schema for a YAML ping session file. All option fields
+// are optional — any CLI flag that is explicitly set takes precedence.
+type pingJobFile struct {
+	Targets    []string       `yaml:"targets"`
+	Interval   *time.Duration `yaml:"interval"` // pointer: nil means "not set in file"
+	Range      *time.Duration `yaml:"range"`
+	Privileged *bool          `yaml:"privileged"`
+}
+
+// loadPingJobFile reads and parses a YAML ping session file.
+func loadPingJobFile(path string) (*pingJobFile, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading ping file: %w", err)
+	}
+	var jf pingJobFile
+	if err := yaml.Unmarshal(data, &jf); err != nil {
+		return nil, fmt.Errorf("parsing ping file: %w", err)
+	}
+	return &jf, nil
+}
+
 var pingCmd = &cobra.Command{
-	Use:   "ping <target> [target ...]",
+	Use:   "ping [target ...] [flags]",
 	Short: "Continuous ICMP ping with a live results table",
 	Long: `Sends continuous ICMP pings to one or more targets and displays a live
 table showing a reachability timeline, packet counts, and RTT statistics.
@@ -51,18 +75,26 @@ capability to the binary once:
 
 Alternatively, use --privileged=false to fall back to UDP-based ICMP which
 works without root on most Linux systems.`,
-	Example: `  netbot ping 192.168.1.1
+	Example: `  # Targets as positional arguments
+  netbot ping 192.168.1.1
   netbot ping 8.8.8.8 1.1.1.1 192.168.1.1
   netbot ping 8.8.8.8 --interval 500ms --range 60s
-  netbot ping 8.8.8.8 --range 300s
-  netbot ping 8.8.8.8 --privileged=false`,
-	Args:         cobra.MinimumNArgs(1),
+
+  # Targets and settings from a file
+  netbot ping --file targets.yaml
+  netbot ping --file targets.yaml --range 300s   # CLI flag overrides file setting
+
+  # Mix: additional ad-hoc targets alongside the file
+  netbot ping --file targets.yaml 10.99.0.1`,
+	Args:         cobra.ArbitraryArgs,
 	RunE:         runPing,
 	SilenceUsage: true,
 }
 
 func init() {
 	f := pingCmd.Flags()
+	f.StringVarP(&pingFlags.file, "file", "f", "",
+		"YAML file specifying targets and session settings")
 	f.DurationVarP(&pingFlags.interval, "interval", "i", time.Second,
 		"Time between pings per target (minimum 250ms)")
 	f.DurationVarP(&pingFlags.timeRange, "range", "r", 90*time.Second,
@@ -72,18 +104,60 @@ func init() {
 }
 
 func runPing(cmd *cobra.Command, args []string) error {
-	if pingFlags.interval < 250*time.Millisecond {
+	// ── Load job file (if provided) and resolve effective settings ────────────
+	//
+	// Precedence: CLI flag explicitly set > job file value > CLI flag default.
+	// Pointer fields on pingJobFile distinguish "not set in file" from an
+	// explicit zero value, mirroring how backup handles per-device overrides.
+
+	interval := pingFlags.interval
+	timeRange := pingFlags.timeRange
+	privileged := pingFlags.privileged
+	hosts := args // positional args; may be empty if --file is used
+
+	if pingFlags.file != "" {
+		jf, err := loadPingJobFile(pingFlags.file)
+		if err != nil {
+			return err
+		}
+
+		// File-specified hosts are merged with any positional args.
+		hosts = append(hosts, jf.Targets...)
+
+		// File options apply only when the corresponding CLI flag was not
+		// explicitly set by the user (i.e. is still at its default value).
+		if !cmd.Flags().Changed("interval") && jf.Interval != nil {
+			interval = *jf.Interval
+		}
+		if !cmd.Flags().Changed("range") && jf.Range != nil {
+			timeRange = *jf.Range
+		}
+		if !cmd.Flags().Changed("privileged") && jf.Privileged != nil {
+			privileged = *jf.Privileged
+		}
+	}
+
+	if len(hosts) == 0 {
+		return fmt.Errorf("no targets specified — provide hosts as arguments or via --file")
+	}
+
+	if interval < 250*time.Millisecond {
 		return fmt.Errorf("--interval must be at least 250ms")
 	}
 
-	numSlots := int(math.Round(pingFlags.timeRange.Seconds() / pingFlags.interval.Seconds()))
+	numSlots := int(math.Round(timeRange.Seconds() / interval.Seconds()))
 	if numSlots < 1 {
 		numSlots = 1
 	}
 
-	targets := make([]*pingTarget, len(args))
-	for i, host := range args {
-		targets[i] = &pingTarget{host: host, numSlots: numSlots}
+	// Deduplicate hosts while preserving order.
+	seen := make(map[string]bool, len(hosts))
+	targets := make([]*pingTarget, 0, len(hosts))
+	for _, h := range hosts {
+		if !seen[h] {
+			seen[h] = true
+			targets = append(targets, &pingTarget{host: h, numSlots: numSlots})
+		}
 	}
 
 	// Probe for raw ICMP socket access before launching the TUI. The alt
@@ -94,16 +168,16 @@ func runPing(cmd *cobra.Command, args []string) error {
 	// carried into the model so it renders as a persistent banner in the
 	// running view itself, not just before it.
 	privilegeWarning := ""
-	if pingFlags.privileged && !canUseRawICMP() {
+	if privileged && !canUseRawICMP() {
 		privilegeWarning = privilegeWarningMessage()
 		fmt.Fprintln(os.Stderr, "warning: "+privilegeWarning)
 	}
 
-	m := newPingModel(targets, pingFlags.interval, numSlots, privilegeWarning)
+	m := newPingModel(targets, interval, numSlots, privilegeWarning)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	for _, t := range targets {
-		go pingLoop(t, pingFlags.interval, pingFlags.privileged)
+		go pingLoop(t, interval, privileged)
 	}
 
 	_, err := p.Run()
